@@ -68,7 +68,7 @@ private enum LectureError: LocalizedError {
         case .invalidRecordingID:
             return "Use Shortcut Input as the Recording ID."
         case .couldNotOpenShortcut:
-            return "Couldn’t open Finish Class. Your audio and transcript are saved."
+            return "Couldn’t open Record Class. Your audio and transcript are saved."
         }
     }
 }
@@ -175,7 +175,7 @@ private final class LectureRecorder: NSObject, ObservableObject, AVAudioRecorder
             if isRecording {
                 let audio = try stop()
                 if hasClassContext(for: audio) {
-                    await transcribe(audio, launchFinishClass: true)
+                    await transcribe(audio)
                 }
             } else {
                 try await start()
@@ -189,7 +189,7 @@ private final class LectureRecorder: NSObject, ObservableObject, AVAudioRecorder
         FileManager.default.fileExists(atPath: LectureFiles.context(for: audio).path)
     }
 
-    func transcribe(_ audio: URL, launchFinishClass: Bool) async {
+    func transcribe(_ audio: URL) async {
         guard !isTranscribing, !isRecording else { return }
         isTranscribing = true
         errorMessage = nil
@@ -203,43 +203,53 @@ private final class LectureRecorder: NSObject, ObservableObject, AVAudioRecorder
                     from: Data(contentsOf: resultURL)
                 )
                 transcript = saved.transcript
-            } else {
-                transcript = try await LectureTranscriber.transcribe(audio)
-
-                if hasClassContext(for: audio) {
-                    let context = try JSONDecoder().decode(
-                        LectureContext.self,
-                        from: Data(contentsOf: LectureFiles.context(for: audio))
-                    )
-                    let result = LectureResult(
-                        className: context.className,
-                        week: context.week,
-                        lectureDate: context.lectureDate,
-                        transcript: transcript
-                    )
-                    try JSONEncoder().encode(result).write(to: resultURL, options: .atomic)
-                }
+                return
             }
 
-            guard launchFinishClass else { return }
+            let text = try await LectureTranscriber.transcribe(audio)
 
-            var callback = URLComponents()
-            callback.scheme = "shortcuts"
-            callback.host = "run-shortcut"
-            callback.queryItems = [
-                URLQueryItem(name: "name", value: "Finish Class"),
-                URLQueryItem(name: "input", value: "text"),
-                URLQueryItem(
-                    name: "text",
-                    value: audio.deletingPathExtension().lastPathComponent
+            if hasClassContext(for: audio) {
+                let context = try JSONDecoder().decode(
+                    LectureContext.self,
+                    from: Data(contentsOf: LectureFiles.context(for: audio))
                 )
-            ]
-
-            guard let url = callback.url, await UIApplication.shared.open(url) else {
-                throw LectureError.couldNotOpenShortcut
+                let result = LectureResult(
+                    className: context.className,
+                    week: context.week,
+                    lectureDate: context.lectureDate,
+                    transcript: text
+                )
+                try JSONEncoder().encode(result).write(to: resultURL, options: .atomic)
             }
+
+            transcript = text
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    func continueInRecordClass(_ audio: URL) async {
+        guard audio == lastRecording, !transcript.isEmpty,
+              !isRecording, !isTranscribing, hasClassContext(for: audio)
+        else { return }
+
+        errorMessage = nil
+
+        var callback = URLComponents()
+        callback.scheme = "shortcuts"
+        callback.host = "run-shortcut"
+        callback.queryItems = [
+            URLQueryItem(name: "name", value: "Record Class"),
+            URLQueryItem(name: "input", value: "text"),
+            URLQueryItem(
+                name: "text",
+                value: audio.deletingPathExtension().lastPathComponent
+            )
+        ]
+
+        guard let url = callback.url, await UIApplication.shared.open(url) else {
+            errorMessage = LectureError.couldNotOpenShortcut.localizedDescription
+            return
         }
     }
 }
@@ -264,13 +274,11 @@ private struct RecorderView: View {
             if let audio = recorder.lastRecording, !recorder.isRecording {
                 ShareLink("Share Last Recording", item: audio)
 
-                let hasClass = recorder.hasClassContext(for: audio)
-                Button(hasClass ? "Run Finish Class" : "Transcribe Last Recording") {
-                    Task {
-                        await recorder.transcribe(audio, launchFinishClass: hasClass)
+                if !recorder.isTranscribing && recorder.transcript.isEmpty {
+                    Button("Transcribe Last Recording") {
+                        Task { await recorder.transcribe(audio) }
                     }
                 }
-                .disabled(recorder.isTranscribing)
             }
 
             if recorder.isTranscribing {
@@ -291,6 +299,14 @@ private struct RecorderView: View {
                 .frame(maxHeight: 240)
 
                 ShareLink("Share Transcript", item: recorder.transcript)
+
+                if let audio = recorder.lastRecording,
+                   recorder.hasClassContext(for: audio) {
+                    Button("Continue in Record Class") {
+                        Task { await recorder.continueInRecordClass(audio) }
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
             }
         }
         .padding()
