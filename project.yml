@@ -1,0 +1,18 @@
+name: LectureRecorder
+
+options:
+  deploymentTarget:
+    iOS: "17.0"
+
+targets:
+  LectureRecorder:
+    type: application
+    platform: iOS
+    sources:
+      - LectureRecorder.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.huy.lecturerecorder
+        INFOPLIST_FILE: Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        SWIFT_VERSION: "5.0"
